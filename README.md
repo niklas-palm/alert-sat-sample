@@ -30,7 +30,7 @@ to get started, run `sam build && sam deploy`. That will build and deploy everyt
   Installs all dependencies and creates the deployment artefact
 
 - `sam deploy`
-  Deploys the built artefact to AWS, using the parameters in the samconfig.toml
+  Deploys the built artefact to AWS, using the parameters in the `samconfig.toml`
 
 - `sam sync --watch`
   Starts a hot-reloading sync, watching for changes in the local project. Any saved changes are automatically synced with the live environment. Cloudformation changes trigger a build and deploy, which takes a few seconds. Lambda code changes are typically updated withing a second.
