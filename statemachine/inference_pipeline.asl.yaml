@@ -1,0 +1,35 @@
+Comment: Alert step sample stepfunction workflow.
+StartAt: Preprocess Data
+States:
+  Preprocess Data:
+    Type: Task
+    Resource: "${PreprocessLambdaArn}"
+    OutputPath: "$"
+    Parameters:
+      Payload.$: "$"
+    Retry:
+      - ErrorEquals:
+          - Lambda.ServiceException
+          - Lambda.AWSLambdaException
+          - Lambda.SdkClientException
+          - Lambda.TooManyRequestsException
+        IntervalSeconds: 2
+        MaxAttempts: 3
+        BackoffRate: 2
+    Next: Perform Inference
+  Perform Inference:
+    Type: Task
+    Resource: "${InferenceLambdaArn}"
+    OutputPath: "$"
+    Parameters:
+      Payload.$: "$"
+    Retry:
+      - ErrorEquals:
+          - Lambda.ServiceException
+          - Lambda.AWSLambdaException
+          - Lambda.SdkClientException
+          - Lambda.TooManyRequestsException
+        IntervalSeconds: 2
+        MaxAttempts: 3
+        BackoffRate: 2
+    End: true

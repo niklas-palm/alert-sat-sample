@@ -1,0 +1,131 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Sample SAM Template for alert-sat-sample
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    LoggingConfig:
+      LogFormat: JSON
+
+Resources:
+  RawBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain # Bucket will not be deleted if cloudformation stack is deleted.
+    Properties:
+      NotificationConfiguration: # Notification triggers the statemachine to start processing.
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
+    #   LifecycleConfiguration: # Lifecycle configuration to move objects to a cheaper storage class after 10 days. More info: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-s3-bucket.html#cfn-s3-bucket-lifecycleconfiguration
+    #     Rules:
+    #       - Id: MoveToOneZoneInfrequentAccess
+    #         Status: Enabled
+    #         Transitions:
+    #           - TransitionInDays: 10
+    #             StorageClass: ONEZONE_IA
+
+  PreprocessedBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain # Bucket will not be deleted if cloudformation stack is deleted.
+
+  ### PREPROCESS LAMBDA ###
+  PreprocessLambda:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      Timeout: 120 # Maximum time the function can run.
+      MemorySize: 128 # Amount of memory the function should have. https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-lambda-function.html#cfn-lambda-function-memorysize
+      CodeUri: functions/PreprocessFunction
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Environment:
+        Variables:
+          PREPROCESSED_BUCKET_NAME: !Ref PreprocessedBucket
+          DDB_TABLE_BAME: !Ref DynamoDbTable
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref RawBucket
+        - S3WritePolicy:
+            BucketName: !Ref PreprocessedBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoDbTable
+
+  PreprocessLambdaLogGroup: # To ensure Logs are deleted after a while.
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${PreprocessLambda}"
+      RetentionInDays: 7
+
+  ### INFERENCE LAMBDA ###
+  InferenceLambda:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      Timeout: 120 # Maximum time the function can run.
+      MemorySize: 128 # Amount of memory the function should have. https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-lambda-function.html#cfn-lambda-function-memorysize
+      CodeUri: functions/InferenceFunction
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Environment:
+        Variables:
+          PREPROCESSED_BUCKET_NAME: !Ref PreprocessedBucket
+          DDB_TABLE_BAME: !Ref DynamoDbTable
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref PreprocessedBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamoDbTable
+
+  InferenceLambdaLogGroup: # To ensure Logs are deleted after a while.
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${InferenceLambda}"
+      RetentionInDays: 7
+
+  ### STEPFUNCTION ###
+  ProcessTeamNewsStateMachine:
+    Type: AWS::Serverless::StateMachine # More info about State Machine Resource: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-statemachine.html
+    Properties:
+      DefinitionUri: statemachine/inference_pipeline.asl.yaml
+      DefinitionSubstitutions: # This injects the variables into the step function definition, so that we can reference the correct lambda functions
+        PreprocessLambdaArn: !GetAtt PreprocessLambda.Arn
+        InferenceLambdaArn: !GetAtt InferenceLambda.Arn
+      Events: # Trigger the step function whenever a new object is upload to the raw bucket.
+        StateChange:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: default
+            Pattern:
+              source:
+                - aws.s3
+              detail-type:
+                - Object Created
+              detail:
+                bucket:
+                  name:
+                    - !Ref RawBucket
+      Policies: # Find out more about SAM policy templates: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-policy-templates.html
+        - LambdaInvokePolicy: # Give stepfunctions the permission to invoke the Lambda function
+            FunctionName: !Ref PreprocessLambda
+        - LambdaInvokePolicy:
+            FunctionName: !Ref InferenceLambda
+        - AWSStepFunctionsFullAccess # Necessary permissions (default IAM role already existing) to allow step functions to do logging to cloudwatch etc.
+
+  DynamoDbTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: pk # Partition key
+          AttributeType: S
+        - AttributeName: sk # Sort key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      BillingMode: PAY_PER_REQUEST
+
+Outputs:
+  RawBucketName:
+    Value: !Ref RawBucket
+    Description: Name of the raw bucket
